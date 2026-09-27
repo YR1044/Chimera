@@ -7,9 +7,10 @@ namespace Chimera {
     enum WidescreenFixSetting {
         WIDESCREEN_OFF = 0,
         WIDESCREEN_ON,
-        WIDESCREEN_CENTER_HUD
+        WIDESCREEN_CENTER_HUD,
+        WIDESCREEN_16_9_HUD
     };
-    
+
     /**
      * Set whether or not to have the widescreen fix
      * @param new_setting setting for the widescreen fix
@@ -21,6 +22,12 @@ namespace Chimera {
      * @return true if the widescreen fix is enabled
      */
     bool widescreen_fix_enabled() noexcept;
+
+    /**
+     * Get the anchor type for the widescreen fix
+     * @return the anchor type.
+     */
+    WidescreenFixSetting get_widescreen_fix() noexcept;
 }
 
 #endif

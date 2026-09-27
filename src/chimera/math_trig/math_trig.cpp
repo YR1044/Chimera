@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include <cmath>
-
 #include "math_trig.hpp"
+#include "../halo_data/game_variables.hpp"
 
 namespace Chimera {
     ColorRGB::ColorRGB(float r, float g, float b) noexcept :
@@ -197,6 +196,44 @@ namespace Chimera {
         return std::sqrt(distance_squared(a.x, a.y, b.x, b.y));
     }
 
+    float magnitude_squared3d(const Point3D &a) noexcept {
+        return a.x * a.x + a.y * a.y + a.z * a.z;
+    }
+
+    float magnitude_squared2d(const Point2D &a) noexcept {
+        return a.x * a.x + a.y * a.y;
+    }
+
+    float magnitude3d(const Point3D &a) noexcept {
+        return std::sqrt(magnitude_squared3d(a));
+    }
+
+    float magnitude2d(const Point2D &a) noexcept {
+        return std::sqrt(magnitude_squared2d(a));
+    }
+
+    float normalize2d(VectorIJ &a) noexcept {
+        float mag = magnitude2d(a);
+        if(mag >= 0.0001f) {
+            a.i = a.i * (1.0f / mag);
+            a.j = a.j * (1.0f / mag);
+        }
+        else {
+            mag = 0.0f;
+        }
+
+        return mag;
+    }
+
+    float dot_product_3d(Point3D *a, Point3D *b) noexcept {
+        return (a->x * b->x) + (a->y * b->y) + (a->z * b->z);
+    }
+
+    float dot_product_3d(VectorIJK *a, VectorIJK *b) noexcept {
+        return (a->i * b->i) + (a->j * b->j) + (a->k * b->k);
+    }
+
+
     double counter_time_elapsed(const LARGE_INTEGER &before) noexcept {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
@@ -207,5 +244,45 @@ namespace Chimera {
         static LARGE_INTEGER performance_frequency = {};
         if(performance_frequency.QuadPart == 0) QueryPerformanceFrequency(&performance_frequency);
         return static_cast<double>(after.QuadPart - before.QuadPart) / performance_frequency.QuadPart;
+    }
+
+    long fast_ftol(float float_to_round) noexcept {
+        long rounded_down = static_cast<long>(float_to_round);
+
+        long a = rounded_down;
+        long b = rounded_down + 1;
+
+        long low = float_to_round - (static_cast<float>(a));
+        long high = (static_cast<float>(b)) - float_to_round;
+
+        return (low < high) ? a : b;
+    }
+
+    void pixel32_to_real_argb_color(const std::uint32_t pixel, ColorARGB *color) noexcept {
+        color->alpha = ((pixel >> 24) & 0xFF) / 255.0;
+        color->red = ((pixel >> 16) & 0xFF) / 255.0;
+        color->green = ((pixel >> 8) & 0xFF) / 255.0;
+        color->blue = ((pixel >> 0) & 0xFF) / 255.0;
+    }
+
+    std::uint32_t real_argb_color_to_pixel32(const ColorARGB *color) noexcept {
+        std::uint32_t output;
+        output = static_cast<std::uint32_t>(color->alpha * 255.0) << 24;
+        output |= static_cast<std::uint32_t>(color->red * 255.0) << 16;
+        output |= static_cast<std::uint32_t>(color->green * 255.0) << 8;
+        output |= static_cast<std::uint32_t>(color->blue * 255.0) << 0;
+        return output;
+    }
+
+    float real_local_random() noexcept {
+        return REAL_RANDOM(*local_random_seed);
+    }
+
+    float real_local_random_range(float lower, float upper) noexcept {
+        return REAL_RANDOM_RANGE(*local_random_seed, lower, upper - lower);
+    }
+
+    bool bool_local_random() noexcept {
+        return RANDOM(*local_random_seed) > 0x8000;
     }
 }

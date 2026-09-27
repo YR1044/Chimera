@@ -5,9 +5,15 @@
 #include "../../../output/output.hpp"
 #include "../../../event/frame.hpp"
 #include "../../../halo_data/object.hpp"
+#include "../../../halo_data/multiplayer.hpp"
 
 namespace Chimera {
     static void shrink_empty_weapons() {
+        // Only apply to multiplayer maps.
+        if(server_type() == ServerType::SERVER_NONE) {
+            return;
+        }
+
         // Get the object table
         auto &object_table = ObjectTable::get_object_table();
 
@@ -20,23 +26,23 @@ namespace Chimera {
             }
 
             // Check if the object isn't visible or is not a weapon or is being held
-            if(object->no_collision || object->type != ObjectType::OBJECT_TYPE_WEAPON || !object->parent.is_null()) {
+            if(TEST_FLAG(object->object.flags, OBJECT_DATA_FLAGS_INVISIBLE_BIT) || object->object.type != ObjectType::OBJECT_TYPE_WEAPON || !object->object.parent_object_index.is_null()) {
                 continue;
             }
 
             // Get the weapon and check if it's empty
-            WeaponDynamicObject &weapon = *reinterpret_cast<WeaponDynamicObject *>(object);
+            auto &weapon = *reinterpret_cast<WeaponDynamicObject *>(object);
 
             // Get the tag
-            auto *tag = get_tag(weapon.tag_id);
+            auto *tag = get_tag(weapon.definition_index);
             auto *tag_data = tag->data;
 
             // First check if the age is maxed. If it is, it's empty no matter what. Otherwise, check the weapon ammo.
-            if(weapon.age < 1.0F) {
+            if(weapon.weapon.age < 1.0F) {
                 // First check if empty
                 bool empty = true;
-                for(auto &magazine : weapon.magazines) {
-                    if(magazine.ammo || magazine.loaded_ammo) {
+                for(auto &magazine : weapon.weapon.magazines) {
+                    if(magazine.rounds_total || magazine.rounds_loaded) {
                         empty = false;
                         break;
                     }

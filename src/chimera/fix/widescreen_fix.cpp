@@ -7,6 +7,7 @@
 #include "../halo_data/pad.hpp"
 
 #include "../chimera.hpp"
+#include "../config/ini.hpp"
 #include "../signature/signature.hpp"
 #include "../signature/hook.hpp"
 #include "../event/tick.hpp"
@@ -17,6 +18,8 @@
 #include "../halo_data/resolution.hpp"
 #include "../event/map_load.hpp"
 #include "widescreen_fix.hpp"
+#include "hud_bitmap_scale.hpp"
+#include "map_hacks/map_hacks.hpp"
 
 extern "C" {
     void widescreen_element_reposition_hud() noexcept;
@@ -31,6 +34,9 @@ extern "C" {
     std::uint32_t widescreen_upscale_nav_element = 0;
     void widescreen_set_upscale_flag() noexcept;
     void widescreen_unset_upscale_flag() noexcept;
+
+    std::uint32_t widescreen_nav_element_distance = 0;
+    void widescreen_get_nav_marker_distance() noexcept;
 
     std::uint32_t widescreen_hud_no_center = 0;
     void widescreen_set_hud_no_center_flag() noexcept;
@@ -47,6 +53,9 @@ extern "C" {
 
     void widescreen_element_reposition_menu_text() noexcept;
     const void *widescreen_element_position_menu_text_fn;
+
+    void widescreen_element_reposition_menu_text_icon() noexcept;
+    const void *widescreen_element_position_menu_text_icon_fn;
 
     void widescreen_element_reposition_menu_text_2() noexcept;
     const void *widescreen_element_position_menu_text_2_fn;
@@ -80,6 +89,9 @@ extern "C" {
     std::int16_t widescreen_left_offset_add = 0;
     void widescreen_cutscene_text_before_asm() noexcept;
     void widescreen_cutscene_text_after_asm() noexcept;
+
+    void widescreen_unfuck_scaline_effect() noexcept;
+    const void *original_widescreen_scaline_instr = nullptr;
 }
 
 namespace Chimera {
@@ -142,26 +154,52 @@ namespace Chimera {
         }
 
         float increase_x = widescreen_width_480p - 640.000f;
-        float increase_y = 0.0f;
 
-        float min_x = element.corners[CORNER_TOP_LEFT].x;
-        float max_x = element.corners[CORNER_TOP_RIGHT].x;
-        float min_y = element.corners[CORNER_TOP_LEFT].y;
-        float max_y = element.corners[CORNER_BOTTOM_LEFT].y;
+        if(global_fix_flags.old_widescreen_fix) {
+            float min_x = element.corners[CORNER_TOP_LEFT].x;
+            float max_x = element.corners[CORNER_TOP_RIGHT].x;
+            float min_y = element.corners[CORNER_TOP_LEFT].y;
+            float max_y = element.corners[CORNER_BOTTOM_LEFT].y;
 
-        float center_x = (min_x + max_x) / 2.0f;
-        float center_y = (min_y + max_y) / 2.0f;
+            float center_x = (min_x + max_x) / 2.0f;
+            float center_y = (min_y + max_y) / 2.0f;
 
-        bool inner_center = std::fabs(320.0f - center_x) < 210.0 && std::fabs(240.0f - center_y) < 170.0;
-        bool centered_x = inner_center || std::fabs(320.0f - center_x) < 100.0;
-        //bool centered_y = inner_center || std::fabs(240.0f - center_y) < 100.0;
+            bool inner_center = std::fabs(320.0f - center_x) < 210.0 && std::fabs(240.0f - center_y) < 170.0;
+            bool centered_x = inner_center || std::fabs(320.0f - center_x) < 100.0;
 
-        // Center centered elements
-        if(centered_x || setting == WidescreenFixSetting::WIDESCREEN_CENTER_HUD) {
-            increase_x /= 2.0f;
+            // Center centered elements
+            if(setting == WidescreenFixSetting::WIDESCREEN_16_9_HUD && aspect_ratio > 16.f / 9.f) {
+                increase_x /= 2.0f;
+                float offset = (((16.f / 9.f) * 480.f) - 640.f) / 2;
+                if(!centered_x && center_x < 320.0f) {
+                    increase_x -= offset;
+                }
+                else if(!centered_x && center_x > 320.0f) {
+                    increase_x += offset;
+                }
+            }
+            else {
+                if(centered_x || setting == WidescreenFixSetting::WIDESCREEN_CENTER_HUD) {
+                    increase_x /= 2.0f;
+                }
+                else if(center_x < 320.0f) {
+                    increase_x = 0.0f;
+                }
+            }
         }
-        else if(center_x < 320.0f) {
-            increase_x = 0.0f;
+        else {
+            // Just center the canvas if using a centered HUD option.
+            if(setting == WidescreenFixSetting::WIDESCREEN_16_9_HUD && aspect_ratio > 16.f / 9.f) {
+                increase_x /= 2.0f;
+                float offset = (((16.f / 9.f) * 480.f) - 640.f) / 2;
+                increase_x -= offset;
+            }
+            else if(setting == WidescreenFixSetting::WIDESCREEN_CENTER_HUD) {
+                increase_x /= 2.0f;
+            }
+            else {
+                increase_x = 0.0f;
+            }
         }
 
         // Adjust elements
@@ -169,11 +207,6 @@ namespace Chimera {
         element.corners[1].x += increase_x;
         element.corners[2].x += increase_x;
         element.corners[3].x += increase_x;
-
-        element.corners[0].y += increase_y;
-        element.corners[1].y += increase_y;
-        element.corners[2].y += increase_y;
-        element.corners[3].y += increase_y;
     }
 
     extern "C" void upscale_hud_element(ElementData &element) noexcept {
@@ -197,7 +230,9 @@ namespace Chimera {
                     new_center_x = last_center_x - last_width / 2.0 - spacing - width / 2.0;
                 }
                 else {
-                    new_center_x -= 6 * (screen_width / 640.0 - 1) * (width / 2.0);
+                    // Banging rocks together
+                    float x = widescreen_nav_element_distance > 999 ? 3.5f : 6.f;
+                    new_center_x -= x * (screen_width / 640.0 - 1) * (width / 2.0);
                 }
 
                 last_width = width;
@@ -308,6 +343,10 @@ namespace Chimera {
         return setting;
     }
 
+    WidescreenFixSetting get_widescreen_fix() noexcept {
+        return setting;
+    }
+
     void set_widescreen_fix(WidescreenFixSetting new_setting) noexcept {
         if(static_cast<bool>(new_setting) != static_cast<bool>(setting)) {
             bool demo = get_chimera().feature_present("client_demo");
@@ -322,7 +361,7 @@ namespace Chimera {
 
             auto &widescreen_element_scaling_sig = get_chimera().get_signature("widescreen_element_scaling_sig");
             hud_element_scaling = reinterpret_cast<float *>(widescreen_element_scaling_sig.data() + 7);
-            
+
             static Hook position_hud;
             auto &widescreen_element_position_hud_sig = get_chimera().get_signature("widescreen_element_position_hud_sig");
             write_function_override(reinterpret_cast<void *>(widescreen_element_position_hud_sig.data()), position_hud, reinterpret_cast<const void *>(widescreen_element_reposition_hud), &widescreen_element_position_hud_fn);
@@ -347,12 +386,17 @@ namespace Chimera {
 
             auto &widescreen_menu_text_sig = get_chimera().get_signature("widescreen_menu_text_sig");
             auto &widescreen_menu_text_2_sig = get_chimera().get_signature("widescreen_menu_text_2_sig");
+            auto &widescreen_menu_text_icon_sig = get_chimera().get_signature("widescreen_menu_text_icon_sig");
+
             if(!hud_text_mod) {
                 static Hook menu_text;
                 write_function_override(reinterpret_cast<void *>(widescreen_menu_text_sig.data() + 9), menu_text, reinterpret_cast<const void *>(widescreen_element_reposition_menu_text), &widescreen_element_position_menu_text_fn);
 
                 static Hook menu_text_2;
                 write_function_override(reinterpret_cast<void *>(widescreen_menu_text_2_sig.data()), menu_text_2, reinterpret_cast<const void *>(widescreen_element_reposition_menu_text_2), &widescreen_element_position_menu_text_2_fn);
+
+                static Hook menu_text_icon;
+                write_function_override(reinterpret_cast<void *>(widescreen_menu_text_icon_sig.data() + 9), menu_text_icon, reinterpret_cast<const void *>(widescreen_element_reposition_menu_text_icon), &widescreen_element_position_menu_text_icon_fn);
             }
 
             auto &widescreen_text_max_x_sig = get_chimera().get_signature("widescreen_text_max_x_sig");
@@ -401,6 +445,10 @@ namespace Chimera {
             static Hook nav_marker_sp;
             auto &widescreen_nav_marker_sp_sig = get_chimera().get_signature("widescreen_nav_marker_sp_sig");
             write_jmp_call(widescreen_nav_marker_sp_sig.data(), nav_marker_sp, reinterpret_cast<const void *>(widescreen_set_upscale_flag), reinterpret_cast<const void *>(widescreen_unset_upscale_flag));
+
+            static Hook nav_marker_dist;
+            auto &widescreen_nav_marker_distance = get_chimera().get_signature("widescreen_hud_number_draw");
+            write_jmp_call(widescreen_nav_marker_distance.data(), nav_marker_dist, reinterpret_cast<const void *>(widescreen_get_nav_marker_distance), nullptr);
 
             static Hook cutscene_text;
             auto &widescreen_text_cutscene_sig = get_chimera().get_signature("widescreen_text_cutscene_sig");
@@ -453,6 +501,10 @@ namespace Chimera {
             static Hook screen_effect;
             auto &widescreen_screen_effect_sig = get_chimera().get_signature("widescreen_screen_effect_sig");
             write_jmp_call(reinterpret_cast<void *>(widescreen_screen_effect_sig.data()), screen_effect, reinterpret_cast<const void *>(temporarily_unfix_scope_mask), reinterpret_cast<const void *>(temporarily_unfix_scope_mask));
+
+            static Hook screen_effect_scaline;
+            auto &widescreen_scanline_sig = get_chimera().get_signature("widescreen_scanline_sig");
+            write_function_override(reinterpret_cast<void *>(widescreen_scanline_sig.data()), screen_effect_scaline, reinterpret_cast<const void *>(widescreen_unfuck_scaline_effect), &original_widescreen_scaline_instr);
 
             auto &widescreen_console_tabs_sig = get_chimera().get_signature("widescreen_console_tabs_sig");
             console_output_width = reinterpret_cast<std::int32_t *>(widescreen_console_tabs_sig.data() + 0x3A);
@@ -512,6 +564,7 @@ namespace Chimera {
                 }
                 widescreen_nav_marker_sig.rollback();
                 widescreen_nav_marker_sp_sig.rollback();
+                widescreen_nav_marker_distance.rollback();
                 if(ce) {
                     auto &widescreen_text_f2_text_position_motd_sig = get_chimera().get_signature("widescreen_text_f2_text_position_motd_sig");
                     auto &widescreen_text_f2_text_position_heading_sig = get_chimera().get_signature("widescreen_text_f2_text_position_heading_sig");
@@ -534,6 +587,7 @@ namespace Chimera {
                 widescreen_hud_pickup_icon_sig.rollback();
                 widescreen_text_loading_screen_sig.rollback();
                 widescreen_screen_effect_sig.rollback();
+                widescreen_scanline_sig.rollback();
                 widescreen_console_tabs_sig.rollback();
                 if(!hud_text_mod) {
                     widescreen_input_text_sig.rollback();
@@ -547,9 +601,9 @@ namespace Chimera {
                 widescreen_mouse_right_bounds = 640;
             }
         }
-        
+
         bool update_on_tick = new_setting && setting != new_setting;
-        
+
         setting = new_setting;
         if(update_on_tick) {
             overwrite(console_width, 640);
@@ -615,9 +669,13 @@ namespace Chimera {
             overwrite(hud_element_scaling, half_width_inverted);
             overwrite(text_scaling, half_width_inverted);
             overwrite(motion_sensor_scaling, half_width_inverted);
-            
+
             float motion_sensor_memes = motion_sensor_x_offset_default / (widescreen_width_480p / 640.0F);
             if(setting == WidescreenFixSetting::WIDESCREEN_CENTER_HUD) {
+                overwrite(motion_sensor_x_offset, motion_sensor_memes);
+            }
+            else if(setting == WidescreenFixSetting::WIDESCREEN_16_9_HUD && aspect_ratio > (16.f / 9.f)) {
+                motion_sensor_memes = motion_sensor_x_offset_default / (widescreen_width_480p / ((16.f / 9.f) * 480.f));
                 overwrite(motion_sensor_x_offset, motion_sensor_memes);
             }
             else {

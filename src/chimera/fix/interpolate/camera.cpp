@@ -32,6 +32,10 @@ namespace Chimera {
     // If true, don't undo the camera (interpolation was skipped this frame)
     static bool skip;
 
+    // Do we need to roll back everything or just the position data?
+    // Rolling back rotation makes aiming feel funny (not coping). Don't do it if we don't have to.
+    static bool rollback;
+
     // Used to force first person rotation interpolation
     extern bool spectate_enabled;
 
@@ -80,28 +84,41 @@ namespace Chimera {
         auto &data = camera_data();
         extern float interpolation_tick_progress;
 
-        // If we're in a vehicle, interpolate the rotation
+        // If we're in a vehicle, interpolate the rotation, or if we're using the debug camera, don't interpolate
         bool vehicle_first_person = false;
-        if(type == CameraType::CAMERA_FIRST_PERSON) {
+        if(type == CameraType::CAMERA_FIRST_PERSON || type == CameraType::CAMERA_DEBUG) {
             auto *player = PlayerTable::get_player_table().get_client_player();
             if(player) {
                 auto *object = ObjectTable::get_object_table().get_dynamic_object(player->object_id);
                 if(object) {
-                    vehicle_first_person = !object->parent.is_null();
+                    vehicle_first_person = !object->object.parent_object_index.is_null();
+                    // Check if dead and if not, don't interpolate debug/death camera.
+                    if(type == CameraType::CAMERA_DEBUG && !TEST_FLAG(object->object.damage_flags, OBJECT_DAMAGE_FLAGS_DEAD_BIT)) {
+                        skip = true;
+                        return;
+                    }
+
+                    // Is the camera moving fast but the player biped velocity low? Probably teleporting so shouldn't interpolate camera.
+                    if(type == CameraType::CAMERA_FIRST_PERSON
+                        && !vehicle_first_person
+                        && distance_squared(previous_tick->data.position, current_tick->data.position) > 0.5 * 0.5
+                        && magnitude_squared3d(object->object.translational_velocity) <= 0.5 * 0.5) {
+
+                        skip = true;
+                        return;
+                    }
                 }
             }
         }
 
+        // Interpolate the position
+        interpolate_point(previous_tick->data.position, current_tick->data.position, data.position, interpolation_tick_progress);
+
         // Don't interpolate rotation if in first person unless we're in a vehicle
         if(type != CameraType::CAMERA_FIRST_PERSON || vehicle_first_person || spectate_enabled) {
-            interpolate_point(previous_tick->data.position, current_tick->data.position, data.position, interpolation_tick_progress);
             interpolate_point(previous_tick->data.orientation[0], current_tick->data.orientation[0], data.orientation[0], interpolation_tick_progress);
             interpolate_point(previous_tick->data.orientation[1], current_tick->data.orientation[1], data.orientation[1], interpolation_tick_progress);
-        }
-
-        // Otherwise, only interpolate Z in case of elevators or Halo's glitchy crouching
-        else {
-            data.position.z = previous_tick->data.position.z + (current_tick->data.position.z - previous_tick->data.position.z) * interpolation_tick_progress;
+            rollback = true;
         }
     }
 
@@ -112,7 +129,10 @@ namespace Chimera {
 
         auto &data = camera_data();
         data.position = current_tick->data.position;
-        std::copy(current_tick->data.orientation, current_tick->data.orientation + 1, data.orientation);
+        if(rollback) {
+            std::copy(current_tick->data.orientation, current_tick->data.orientation + 1, data.orientation);
+            rollback = false;
+        }
     }
 
     void interpolate_camera_clear() noexcept {

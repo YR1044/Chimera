@@ -118,7 +118,7 @@ namespace Chimera {
         return custom_chat_initialized;
     }
 
-    typedef std::chrono::high_resolution_clock clock;
+    typedef std::chrono::steady_clock clock;
 
     static float seconds_since_time(const clock::time_point &time) noexcept {
         auto duration = clock::now() - time;
@@ -173,8 +173,8 @@ namespace Chimera {
     static std::uint16_t server_message_h_chat_open = 160;
     static TextAnchor server_message_anchor = TextAnchor::ANCHOR_TOP_RIGHT;
     static bool server_message_hide_on_console = false;
-    static GenericFont server_message_font = GenericFont::FONT_LARGE;
-    static float server_message_line_height = 1.0F;
+    static GenericFont server_message_font = GenericFont::FONT_SMALL;
+    static float server_message_line_height = 1.1F;
 
     ////////////////////////////////////////////////////////////////////////////
     // Chat messages
@@ -190,7 +190,7 @@ namespace Chimera {
     static TextAnchor chat_message_anchor = TextAnchor::ANCHOR_TOP_LEFT;
     static bool chat_message_hide_on_console = true;
     static GenericFont chat_message_font = GenericFont::FONT_SMALL;
-    static float chat_message_line_height = 1.0F;
+    static float chat_message_line_height = 1.1F;
 
     ////////////////////////////////////////////////////////////////////////////
     // Chat input
@@ -621,7 +621,6 @@ namespace Chimera {
         static const unsigned int CONT = 0b10000000;
         static const unsigned int ZWJ[] = {0b11100010, 0b10000000, 0b10001101};
 
-        unsigned int idx = 0;
         unsigned int zwjidx = 0;
         bool zwjing = false;
         for (unsigned int i = 0; i < num_bytes; i++){
@@ -631,7 +630,6 @@ namespace Chimera {
                 zwjidx++;
                 if (zwjidx == sizeof(ZWJ)/sizeof(ZWJ[0])){
                     zwjidx = 0;
-                    idx--; // remove the starting index of the ZWJ character
                     zwjing = true;
                 }
             }
@@ -813,7 +811,21 @@ namespace Chimera {
                 }
                 if (!inserted_emoji) {
                     // Insert the character normally
-                    chat_input_buffer.insert(chat_input_cursor++, 1, character);
+                    if(character >= 0x80) {
+                        // Not enough space
+                        if(num_bytes >= INPUT_BUFFER_SIZE - 2) {
+                            return;
+                        }
+
+                        // Needs to be converted to UTF-8
+                        chat_input_buffer.insert(chat_input_cursor++, 1, 0xC2 + (character > 0xBF ? 1 : 0));
+                        chat_input_buffer.insert(chat_input_cursor++, 1, 0x80 + (character & 0x3F));
+                    }
+                    else {
+                        // Can be used as-is
+                        chat_input_buffer.insert(chat_input_cursor++, 1, character);
+                    }
+
                 }
             }
         }
@@ -849,12 +861,18 @@ namespace Chimera {
         auto *ustr_tag_data = ustr->data;
         std::uint32_t strings_count = *reinterpret_cast<std::uint32_t *>(ustr_tag_data);
         if(index >= strings_count) {
-            return std::wstring();
+            return std::wstring(L"<missing string>");
         }
         auto *strings = *reinterpret_cast<std::byte **>(ustr_tag_data + 0x4);
         auto *str_ref = strings + 0x14 * index;
         auto str_len = *reinterpret_cast<std::size_t *>(str_ref + 0x0);
         auto *str = *reinterpret_cast<wchar_t **>(str_ref + 0xC);
+
+        // Check for missing null terminator. This will happen with strings touched by Eschaton.
+        // Halo would normally write a null terminator on access if missing, but we don't do that because it basically means "write zero anywhere you want in RAM"
+        if(*(str + str_len / sizeof(wchar_t) - 1) != '\0') {
+            return std::wstring(L"<invalid string>");
+        }
 
         // Truncate down to this
         return std::wstring(str, str_len);
